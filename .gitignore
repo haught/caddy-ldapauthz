@@ -1,0 +1,7 @@
+xcaddy
+caddy
+caddy.*
+.env*
+node_modules
+*.vim
+tmp/
