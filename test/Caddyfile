@@ -1,0 +1,87 @@
+# Test harness: OIDC login via caddy-security, then ldap_authz.
+# Settings come from .env (see .env.example); run with `make run`.
+{
+	# Only serve the HTTPS site; don't bind :80 for redirects.
+	auto_https disable_redirects
+	# Don't add Caddy's local CA to the system trust store (that needs sudo).
+	# The browser will warn about the localhost certificate instead.
+	skip_install_trust
+
+	# LOG_LEVEL=DEBUG shows each ldap_authz decision and caddy-security's login flow.
+	log {
+		level {$LOG_LEVEL:INFO}
+	}
+
+	security {
+		oauth identity provider oidc {
+			realm oidc
+			driver generic
+			client_id {$OIDC_CLIENT_ID}
+			# resolved at provision time so the secret stays out of the adapted JSON / admin API
+			client_secret {env.OIDC_CLIENT_SECRET}
+			scopes {$OIDC_SCOPES:openid profile email}
+			base_auth_url {$OIDC_PROVIDER_URL}
+			metadata_url {$OIDC_PROVIDER_URL}/.well-known/openid-configuration
+			extract preferred_username from userinfo
+		}
+
+		# Direct OAuth login: no portal. Callback is
+		# <SITE_ORIGIN>/_authcrunch/oauth2/ldapauthz/authorization-code-callback
+		authorization policy ldapauthz {
+			use oauth identity provider oidc
+			oauth public origin {$SITE_ORIGIN:https://localhost:8443}
+			oauth session lifetime {$OIDC_SESSION_LIFETIME:3600}
+			allow roles authp/user
+		}
+	}
+}
+
+{$SITE_ORIGIN:https://localhost:8443} {
+	# Access log: one line per request with status and user_id.
+	log
+
+	# Show why a request failed (401/403/503) instead of an empty page.
+	handle_errors {
+		respond "{err.status_code} {err.status_text}: {err.message}"
+	}
+
+	route {
+		# Static page; the form posts to the policy's logout endpoint.
+		handle /logout {
+			header Content-Type "text/html; charset=utf-8"
+			respond `<form method="post" action="/_authcrunch/oauth2/ldapauthz/logout"><button>Log out</button></form>`
+		}
+
+		authorize with ldapauthz
+
+		ldap_authz {
+			url {$LDAP_URL}
+			base_dn "{$LDAP_BASE_DN}"
+			bind_dn "{$LDAP_BIND_DN}"
+			bind_password {env.LDAP_BIND_PASSWORD}
+			user {$LDAP_USER}
+			user_filter "{$LDAP_USER_FILTER}"
+			ca_file "{$LDAP_CA_FILE}"
+			# quoted so an empty value means off rather than a bare (on) flag
+			strip_domain "{$LDAP_STRIP_DOMAIN:off}"
+			nested "{$LDAP_NESTED:off}"
+			starttls "{$LDAP_STARTTLS:off}"
+			allow {$LDAP_ALLOW}
+			cache_ttl {$LDAP_CACHE_TTL}
+			timeout {$LDAP_TIMEOUT}
+			stale_ttl {$LDAP_STALE_TTL}
+		}
+
+		respond <<TEXT
+			ldap_authz: access granted
+			id:       {http.auth.user.id}
+			sub:      {http.auth.user.sub}
+			name:     {http.auth.user.name}
+			email:    {http.auth.user.email}
+			username: {http.auth.user.username}
+			roles:    {http.auth.user.roles}
+			issuer:   {http.auth.user.issuer}
+			logout:   /logout
+			TEXT 200
+	}
+}

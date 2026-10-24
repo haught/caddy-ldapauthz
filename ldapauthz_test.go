@@ -102,14 +102,79 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 	}
 }
 
+// TestUnmarshalCaddyfileEmptyValues covers options fed by unset environment
+// variables, which expand to nothing (bare option) or "" (quoted).
+func TestUnmarshalCaddyfileEmptyValues(t *testing.T) {
+	d := caddyfile.NewTestDispenser(`ldap_authz {
+		url ldaps://dc.corp.example.com:636
+		bind_dn "CN=svc,DC=corp,DC=example,DC=com"
+		bind_password secret
+		base_dn "DC=corp,DC=example,DC=com"
+		user
+		user_filter ""
+		ca_file
+		strip_domain ""
+		nested off
+		starttls false
+		allow
+		allow ""
+		cache_ttl
+		timeout ""
+		stale_ttl
+	}`)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatal(err)
+	}
+	if h.User != "" || h.UserFilter != "" || h.CAFile != "" || h.StripDomain || h.Nested ||
+		h.StartTLS || len(h.Allow) != 0 || h.CacheTTL != 0 || h.Timeout != 0 || h.StaleTTL != 0 {
+		t.Fatalf("empty values not left unset: %+v", h)
+	}
+	if err := provisionAndValidate(&h); err != nil {
+		t.Fatal(err)
+	}
+	if h.User != defaultUser || h.UserFilter != defaultFilter ||
+		h.CacheTTL != caddy.Duration(5*time.Minute) || h.Timeout != caddy.Duration(5*time.Second) ||
+		h.StaleTTL != caddy.Duration(time.Hour) {
+		t.Errorf("defaults not applied: %+v", h)
+	}
+}
+
+func TestUnmarshalCaddyfileFlags(t *testing.T) {
+	tests := map[string]bool{
+		"nested":       true,
+		"nested on":    true,
+		"nested ON":    true,
+		"nested true":  true,
+		"nested 1":     true,
+		"nested off":   false,
+		"nested false": false,
+		"nested 0":     false,
+		`nested ""`:    false,
+	}
+	for line, want := range tests {
+		t.Run(line, func(t *testing.T) {
+			var h Handler
+			d := caddyfile.NewTestDispenser("ldap_authz {\n" + line + "\n}")
+			if err := h.UnmarshalCaddyfile(d); err != nil {
+				t.Fatal(err)
+			}
+			if h.Nested != want {
+				t.Errorf("Nested = %v, want %v", h.Nested, want)
+			}
+		})
+	}
+}
+
 func TestUnmarshalCaddyfileErrors(t *testing.T) {
 	tests := map[string]string{
-		"unknown option": `bogus`,
-		"missing arg":    `url`,
-		"extra arg":      `url a b`,
-		"empty allow":    `allow`,
-		"bad duration":   `cache_ttl soon`,
-		"off not stale":  `cache_ttl off`,
+		"unknown option":  `bogus`,
+		"extra arg":       `url a b`,
+		"bad duration":    `cache_ttl soon`,
+		"off not stale":   `cache_ttl off`,
+		"extra duration":  `timeout 1s 2s`,
+		"bad flag":        `nested maybe`,
+		"extra flag args": `nested on off`,
 	}
 	for name, line := range tests {
 		t.Run(name, func(t *testing.T) {

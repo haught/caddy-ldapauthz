@@ -11,6 +11,17 @@ xcaddy build \
   --with github.com/haught/caddy-ldapauthz=./
 ```
 
+## Testing
+
+[test/](test/) builds Caddy with caddy-security and this checkout, and runs a site that logs in with OIDC and then applies `ldap_authz`:
+
+```sh
+cd test
+make run   # first run creates .env from .env.example; fill it in and re-run
+```
+
+Register `<SITE_ORIGIN>/_authcrunch/oauth2/ldapauthz/authorization-code-callback` as the redirect URI with your IdP. `make validate` checks the config, and `make adapt` prints the JSON it adapts to.
+
 ## Options
 
 | Option | Default | Description |
@@ -20,9 +31,9 @@ xcaddy build \
 | `bind_dn` / `bind_password` | required | Service account. Password supports `{env.VAR}` |
 | `user` | `{http.auth.user.email}` | Placeholder holding the authenticated identity |
 | `user_filter` | UPN match, enabled user accounts only | Must contain `{user}` (escaped before use) |
-| `strip_domain` | off | Drop `@domain` from the identity before lookup |
-| `nested` | off | Resolve nested groups (`LDAP_MATCHING_RULE_IN_CHAIN`) |
-| `starttls` | off | Upgrade `ldap://` with StartTLS |
+| `strip_domain [on\|off]` | off | Drop `@domain` from the identity before lookup |
+| `nested [on\|off]` | off | Resolve nested groups (`LDAP_MATCHING_RULE_IN_CHAIN`) |
+| `starttls [on\|off]` | off | Upgrade `ldap://` with StartTLS |
 | `ca_file` | system pool | PEM CA bundle for the DC certificate |
 | `allow` | | Full group DNs (compared case-insensitively). Repeatable. Empty allows any found user |
 | `cache_ttl` | `5m` | Lifetime of successful lookups. Not-found results are never cached |
@@ -30,6 +41,8 @@ xcaddy build \
 | `stale_ttl` | `1h` | Keep using a cached result this long past `cache_ttl` if the directory is unreachable; `off` disables |
 
 Responses: `401` no identity, `403` user not found or not in an allowed group, `503` directory error.
+
+Every option can be set from an environment variable, e.g. `base_dn "{$LDAP_BASE_DN}"`. An empty or missing value keeps the default. A flag with no value is on, so quote it and give it a default: `nested "{$LDAP_NESTED:off}"`.
 
 ## Example
 

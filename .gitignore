@@ -2,6 +2,7 @@ xcaddy
 caddy
 caddy.*
 .env*
+!.env.example
 node_modules
 *.vim
 tmp/

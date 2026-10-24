@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +157,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 		h.allow = append(h.allow, dn)
 	}
+	if len(h.allow) == 0 {
+		h.log.Warn("no allow groups configured; any user found in the directory is permitted")
+	}
 
 	u, err := url.Parse(h.URL)
 	if err != nil {
@@ -201,6 +205,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		user, _, _ = strings.Cut(user, "@")
 	}
 	if user == "" {
+		h.log.Debug("no authenticated user", zap.String("placeholder", h.User))
 		return caddyhttp.Error(http.StatusUnauthorized, errors.New("no authenticated user"))
 	}
 
@@ -212,11 +217,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		h.log.Error("ldap lookup failed", zap.String("user", user), zap.Error(err))
 		return caddyhttp.Error(http.StatusServiceUnavailable, err)
 	}
+	h.log.Debug("directory groups", zap.String("user", user), zap.Stringers("groups", groups))
 
 	if len(h.allow) > 0 && !h.permitted(groups) {
 		h.log.Info("access denied", zap.String("user", user))
 		return caddyhttp.Error(http.StatusForbidden, errors.New("not in an allowed group"))
 	}
+	h.log.Debug("access granted", zap.String("user", user))
 	return next.ServeHTTP(w, r)
 }
 
@@ -238,6 +245,7 @@ func (h *Handler) groups(user string) ([]*ldap.DN, error) {
 	c, ok := h.cache.entries[key]
 	h.cache.mu.RUnlock()
 	if ok && time.Now().Before(c.exp) {
+		h.log.Debug("cache hit", zap.String("user", user))
 		return c.groups, nil
 	}
 
@@ -296,9 +304,11 @@ func (h *Handler) lookup(user string) ([]*ldap.DN, error) {
 		if n > 1 {
 			h.log.Warn("user_filter matched multiple entries", zap.String("user", user), zap.Int("count", n))
 		}
+		h.log.Debug("user not found", zap.String("user", user), zap.String("base_dn", h.BaseDN), zap.String("filter", filter))
 		return nil, errNotFound
 	}
 	entry := res.Entries[0]
+	h.log.Debug("user found", zap.String("user", user), zap.String("dn", entry.DN))
 
 	if len(h.allow) == 0 {
 		return nil, nil
@@ -355,17 +365,21 @@ func toGroups(dns []string) []*ldap.DN {
 //	    base_dn       <dn>
 //	    user          <placeholder>
 //	    user_filter   <filter>
-//	    strip_domain
-//	    nested
-//	    starttls
+//	    strip_domain  [on | off]
+//	    nested        [on | off]
+//	    starttls      [on | off]
 //	    ca_file       <path>
-//	    allow         <group_dn...>
+//	    allow         [<group_dn...>]
 //	    cache_ttl     <duration>
 //	    timeout       <duration>
 //	    stale_ttl     <duration | off>
 //	}
 //
-// allow may be repeated.
+// allow may be repeated. Every option accepts an empty or missing value so
+// it can be set from an environment variable such as {$LDAP_BASE_DN}: an
+// empty value leaves the default in place. A flag with no value is on, so
+// write a flag as e.g. nested "{$LDAP_NESTED:off}" to keep it off when the
+// variable is unset or empty.
 func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next()
 	strs := map[string]*string{
@@ -377,36 +391,49 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		"user_filter":   &h.UserFilter,
 		"ca_file":       &h.CAFile,
 	}
+	flags := map[string]*bool{
+		"strip_domain": &h.StripDomain,
+		"nested":       &h.Nested,
+		"starttls":     &h.StartTLS,
+	}
 	for d.NextBlock(0) {
 		opt := d.Val()
-		if p, ok := strs[opt]; ok {
-			if !d.AllArgs(p) {
-				return d.ArgErr()
+		args := d.RemainingArgs()
+		if opt == "allow" {
+			for _, a := range args {
+				if a != "" {
+					h.Allow = append(h.Allow, a)
+				}
 			}
 			continue
 		}
+		if len(args) > 1 {
+			return d.ArgErr()
+		}
+		var v string
+		if len(args) == 1 {
+			v = args[0]
+		}
+		if p, ok := strs[opt]; ok {
+			*p = v
+			continue
+		}
+		if p, ok := flags[opt]; ok {
+			on, err := parseFlag(args)
+			if err != nil {
+				return d.Errf("%s: %v", opt, err)
+			}
+			*p = on
+			continue
+		}
 		switch opt {
-		case "strip_domain":
-			h.StripDomain = true
-		case "nested":
-			h.Nested = true
-		case "starttls":
-			h.StartTLS = true
-		case "allow":
-			args := d.RemainingArgs()
-			if len(args) == 0 {
-				return d.ArgErr()
-			}
-			h.Allow = append(h.Allow, args...)
 		case "cache_ttl", "timeout", "stale_ttl":
-			var v string
-			if !d.AllArgs(&v) {
-				return d.ArgErr()
-			}
 			var dur time.Duration
-			if opt == "stale_ttl" && v == "off" {
+			switch {
+			case v == "":
+			case opt == "stale_ttl" && v == "off":
 				dur = -1
-			} else {
+			default:
 				var err error
 				if dur, err = caddy.ParseDuration(v); err != nil {
 					return d.Errf("%s: %v", opt, err)
@@ -425,6 +452,22 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		}
 	}
 	return nil
+}
+
+// parseFlag reports whether a flag is on. No value means on; an empty value
+// (an unset environment variable in quotes) means off.
+func parseFlag(args []string) (bool, error) {
+	if len(args) == 0 {
+		return true, nil
+	}
+	switch v := strings.ToLower(args[0]); v {
+	case "on":
+		return true, nil
+	case "off", "":
+		return false, nil
+	default:
+		return strconv.ParseBool(v)
+	}
 }
 
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
