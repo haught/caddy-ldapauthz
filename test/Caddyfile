@@ -40,7 +40,9 @@
 	# Access log: one line per request with status and user_id.
 	log
 
-	# Show why a request failed (401/403/503) instead of an empty page.
+	# Test only: show the status and short reason (401/403/503) instead of an
+	# empty page. ldap_authz keeps details out of {err.message}, but other
+	# handlers may not, so don't copy this into production.
 	handle_errors {
 		respond "{err.status_code} {err.status_text}: {err.message}"
 	}
@@ -62,12 +64,17 @@
 			user {$LDAP_USER}
 			user_filter "{$LDAP_USER_FILTER}"
 			ca_file "{$LDAP_CA_FILE}"
+			# Only identities from the oidc realm defined above.
+			require {http.auth.user.realm} oidc
+			# Domains separated by spaces; empty looks the identity up as is.
+			strip_domain {$LDAP_STRIP_DOMAIN}
 			# quoted so an empty value means off rather than a bare (on) flag
-			strip_domain "{$LDAP_STRIP_DOMAIN:off}"
 			nested "{$LDAP_NESTED:off}"
 			starttls "{$LDAP_STARTTLS:off}"
 			allow {$LDAP_ALLOW}
+			allow_any_user "{$LDAP_ALLOW_ANY_USER:off}"
 			cache_ttl {$LDAP_CACHE_TTL}
+			negative_ttl {$LDAP_NEGATIVE_TTL}
 			timeout {$LDAP_TIMEOUT}
 			stale_ttl {$LDAP_STALE_TTL}
 		}
