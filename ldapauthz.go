@@ -599,7 +599,9 @@ func memberFilter(groups []string, nested bool) string {
 	var b strings.Builder
 	b.WriteString("(|")
 	for _, g := range groups {
-		b.WriteString(assertion + ldap.EscapeFilter(strings.TrimSpace(g)) + ")")
+		b.WriteString(assertion)
+		b.WriteString(ldap.EscapeFilter(strings.TrimSpace(g)))
+		b.WriteString(")")
 	}
 	b.WriteString(")")
 	return b.String()

@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -72,8 +71,16 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		Timeout:      caddy.Duration(2 * time.Second),
 		StaleTTL:     caddy.Duration(15 * time.Minute),
 	}
-	if !reflect.DeepEqual(h, want) {
-		t.Errorf("got  %+v\nwant %+v", h, want)
+	got, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(exp) {
+		t.Errorf("got  %s\nwant %s", got, exp)
 	}
 }
 
